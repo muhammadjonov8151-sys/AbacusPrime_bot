@@ -189,11 +189,11 @@ async def get_missing_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int,
     return missing
 
 
-def build_keyboard(missing: list) -> InlineKeyboardMarkup:
+def build_keyboard(missing: list, target_user_id: int) -> InlineKeyboardMarkup:
     buttons = []
     for ch in missing:
         buttons.append([InlineKeyboardButton(f"📢 {ch['name']}", url=ch["invite_link"])])
-    buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check")])
+    buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data=f"check:{target_user_id}")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -239,32 +239,92 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mention = user.mention_html()
     text = gcfg["message"].replace("{mention}", mention)
+    keyboard = build_keyboard(missing, user.id)
 
-    await context.bot.send_message(
-        update.effective_chat.id,
-        text,
-        reply_markup=build_keyboard(missing),
-        parse_mode="HTML",
-    )
+    try:
+        # Avval shaxsiy xabar sifatida yuborishga harakat qilamiz
+        await context.bot.send_message(
+            user.id,
+            text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
+    except Exception:
+        # Foydalanuvchi botga hali "Start" bosmagan — guruhda to'liq xabar
+        # (faqat shu foydalanuvchi tugmani bosa oladi, boshqalar bossa rad etiladi)
+        warn = await context.bot.send_message(
+            update.effective_chat.id,
+            text + "\n\n<i>(Botga shaxsiy /start bossangiz, keyingi safar bu xabar faqat sizga yuboriladi)</i>",
+            reply_markup=keyboard,
+            parse_mode="HTML",
+        )
 
 
 async def on_check_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
+
+    # callback_data: "check:<target_user_id>"
+    try:
+        target_id = int(query.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        target_id = user.id
+
+    if user.id != target_id:
+        await query.answer("Bu tugma sizga tegishli emas!", show_alert=True)
+        return
+
+    # Bu xabar guruhdan keldimi yoki DM'danmi — ikkalasida ham chat_id kerak.
+    # Guruh xabari bo'lsa, group_chat_id ni topamiz (query.message.chat_id guruh
+    # bo'lishi ham, DM bo'lishi ham mumkin — buni saqlagan config orqali bilamiz).
     chat_id = query.message.chat_id
+    is_group = query.message.chat.type in ("group", "supergroup")
+
+    if is_group:
+        group_chat_id = chat_id
+    else:
+        # DM orqali kelgan bo'lsa, foydalanuvchi qaysi guruhda cheklangani
+        # xabar matnida saqlanmagani uchun, barcha guruhlardagi cheklovni
+        # tekshirib, unmute qilamiz.
+        cfg = load_config()
+        group_chat_id = None
+        for gid in cfg["groups"].keys():
+            group_chat_id = int(gid)
+            gcfg_ = get_group_cfg(cfg, group_chat_id)
+            missing_ = await get_missing_channels(context, user.id, gcfg_["channels"])
+            if not missing_:
+                try:
+                    await context.bot.restrict_chat_member(
+                        group_chat_id,
+                        user.id,
+                        permissions=ChatPermissions(
+                            can_send_messages=True,
+                            can_send_photos=True,
+                            can_send_videos=True,
+                            can_send_other_messages=True,
+                        ),
+                    )
+                except Exception:
+                    pass
+        await query.answer("Tabriklaymiz! Endi guruhda yozishingiz mumkin.", show_alert=True)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        return
 
     cfg = load_config()
-    gcfg = get_group_cfg(cfg, chat_id)
+    gcfg = get_group_cfg(cfg, group_chat_id)
     missing = await get_missing_channels(context, user.id, gcfg["channels"])
 
     if missing:
         await query.answer("Hali barcha kanallarga qo'shilmadingiz!", show_alert=True)
-        await query.edit_message_reply_markup(reply_markup=build_keyboard(missing))
+        await query.edit_message_reply_markup(reply_markup=build_keyboard(missing, user.id))
         return
 
     try:
         await context.bot.restrict_chat_member(
-            chat_id,
+            group_chat_id,
             user.id,
             permissions=ChatPermissions(
                 can_send_messages=True,
