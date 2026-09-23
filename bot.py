@@ -200,6 +200,11 @@ def build_keyboard(missing: list) -> InlineKeyboardMarkup:
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type not in ("group", "supergroup"):
         return
+
+    # Kanaldan avtomatik kelgan xabarlarni (linked channel post) tekshirmaymiz
+    if update.message.sender_chat:
+        return
+
     user = update.effective_user
     if user.is_bot:
         return
@@ -278,6 +283,14 @@ async def on_check_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+async def on_service_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """'X guruhga qo'shildi' / 'X guruhdan chiqdi' xabarlarini o'chiradi."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+
 def main():
     if not BOT_TOKEN or not OWNER_ID:
         raise SystemExit(
@@ -292,6 +305,10 @@ def main():
     app.add_handler(CommandHandler("setmessage", cmd_setmessage))
     app.add_handler(CommandHandler("id", cmd_id))
     app.add_handler(CallbackQueryHandler(on_check_button, pattern="^check$"))
+    app.add_handler(MessageHandler(
+        filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
+        on_service_message,
+    ))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, on_message))
 
     logger.info("Bot ishga tushdi...")
