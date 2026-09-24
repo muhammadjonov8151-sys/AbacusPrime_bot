@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import logging
+import re
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -194,6 +195,308 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Chat ID: `{update.effective_chat.id}`", parse_mode="Markdown")
 
 
+# ---------- YOSH BO'YICHA RO'YXAT TARTIBLASH ----------
+
+def age_category(age: int) -> str:
+    if age <= 6:
+        return "5-6 yosh"
+    elif age <= 8:
+        return "7-8 yosh"
+    elif age <= 10:
+        return "9-10 yosh"
+    else:
+        return "11+ yosh"
+
+
+def parse_roster_line(line: str):
+    """'Aliyev Vali - 8 yosh' kabi qatordan (ism, yosh) ni ajratadi."""
+    line = line.strip()
+    if not line:
+        return None
+    # Boshidagi raqamlashni olib tashlaymiz: "1.", "2)"
+    line = re.sub(r'^\s*\d+[\.\)]\s*', '', line)
+    numbers = list(re.finditer(r'\d{1,2}', line))
+    if not numbers:
+        return None
+    age_match = numbers[-1]
+    age = int(age_match.group())
+    if age < 3 or age > 20:
+        return None
+    name_part = line[:age_match.start()] + line[age_match.end():]
+    name_part = re.sub(r'\b(yosh|yoshda|yoshi)\b', '', name_part, flags=re.IGNORECASE)
+    name_part = re.sub(r'[-,;:.]+', ' ', name_part)
+    name_part = re.sub(r'\s+', ' ', name_part).strip(' -,')
+    if not name_part:
+        return None
+    return name_part, age
+
+
+async def cmd_royhat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply qilingan ro'yxatni, ko'rsatilgan viloyat ostida, yosh bo'yicha
+    tartiblab saqlaydi. Foydalanish: xabarga reply qilib /royhat Buxoro"""
+    if not await is_admin(update, context):
+        return await update.message.reply_text("Bu buyruq faqat adminlar uchun.")
+
+    if not context.args:
+        return await update.message.reply_text(
+            "Viloyat nomini ko'rsating. Masalan:\n"
+            "Avval ro'yxat xabariga reply qilib: /royhat Buxoro"
+        )
+
+    if not update.message.reply_to_message or not update.message.reply_to_message.text:
+        return await update.message.reply_text(
+            "Avval o'quvchilar ro'yxatini (har qatorda 1 ta: Ism Familiya - yosh) yuboring, "
+            "so'ng o'sha xabarga javob (reply) qilib /royhat <viloyat> deb yozing."
+        )
+
+    region_input = " ".join(context.args).strip()
+
+    lines = update.message.reply_to_message.text.split("\n")
+    cfg = load_config()
+    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+    if "roster" not in gcfg:
+        gcfg["roster"] = {}
+
+    # Viloyat nomini katta-kichik harflarga qaramay mavjud kalitga moslashtiramiz
+    region = region_input
+    for existing in gcfg["roster"].keys():
+        if existing.lower() == region_input.lower():
+            region = existing
+            break
+    gcfg["roster"].setdefault(region, {})
+
+    added = 0
+    failed_lines = []
+    for line in lines:
+        parsed = parse_roster_line(line)
+        if not parsed:
+            if line.strip():
+                failed_lines.append(line.strip())
+            continue
+        name, age = parsed
+        cat = age_category(age)
+        gcfg["roster"][region].setdefault(cat, [])
+        gcfg["roster"][region][cat].append({"name": name, "age": age})
+        added += 1
+
+    save_config(cfg)
+
+    summary_lines = [f"✅ {region} — {added} ta o'quvchi qo'shildi.\n"]
+    for cat in ["5-6 yosh", "7-8 yosh", "9-10 yosh", "11+ yosh"]:
+        count = len(gcfg["roster"][region].get(cat, []))
+        summary_lines.append(f"• {cat}: {count} nafar")
+
+    region_total = sum(len(v) for v in gcfg["roster"][region].values())
+    summary_lines.append(f"\n{region} bo'yicha jami: {region_total} nafar")
+
+    if failed_lines:
+        summary_lines.append(f"\n⚠️ {len(failed_lines)} ta qator tushunilmadi:")
+        for fl in failed_lines[:10]:
+            summary_lines.append(f"— {fl}")
+
+    await update.message.reply_text("\n".join(summary_lines))
+
+
+async def cmd_royhatdanchiqar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bitta o'quvchini ro'yxatdan olib tashlaydi.
+    Foydalanish: 'Aliyev Vali - 8 yosh' xabariga reply qilib /royhatdanchiqar Buxoro"""
+    if not await is_admin(update, context):
+        return await update.message.reply_text("Bu buyruq faqat adminlar uchun.")
+
+    if not context.args:
+        return await update.message.reply_text(
+            "Viloyat nomini ko'rsating. Masalan:\n"
+            "'Aliyev Vali - 8 yosh' deb yozilgan xabarga reply qilib: /royhatdanchiqar Buxoro"
+        )
+
+    if not update.message.reply_to_message or not update.message.reply_to_message.text:
+        return await update.message.reply_text(
+            "O'chirmoqchi bo'lgan o'quvchining ismi va yoshini (masalan 'Aliyev Vali - 8 yosh') "
+            "alohida xabar qilib yuboring, so'ng o'sha xabarga reply qilib /royhatdanchiqar <viloyat> deb yozing."
+        )
+
+    region_input = " ".join(context.args).strip()
+    parsed = parse_roster_line(update.message.reply_to_message.text.split("\n")[0])
+    if not parsed:
+        return await update.message.reply_text("Ism va yoshni tushuna olmadim. Format: Ism Familiya - yosh")
+
+    target_name, target_age = parsed
+    cfg = load_config()
+    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+    roster = gcfg.get("roster", {})
+
+    region = None
+    for existing in roster.keys():
+        if existing.lower() == region_input.lower():
+            region = existing
+            break
+    if not region:
+        return await update.message.reply_text(f"'{region_input}' nomli viloyat ro'yxati topilmadi.")
+
+    cat = age_category(target_age)
+    students = roster[region].get(cat, [])
+    for i, s in enumerate(students):
+        if s["name"].lower() == target_name.lower() and s["age"] == target_age:
+            students.pop(i)
+            save_config(cfg)
+            return await update.message.reply_text(
+                f"✅ {target_name} ({target_age} yosh) {region} ro'yxatidan olib tashlandi."
+            )
+
+    await update.message.reply_text(
+        f"❌ {target_name} ({target_age} yosh) {region} ro'yxatida topilmadi."
+    )
+
+
+async def cmd_royhatlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ro'yxatni fayl qilib chiqaradi. Argumentsiz — barcha viloyatlar,
+    argument bilan (masalan /royhatlar Buxoro) — faqat o'sha viloyat."""
+    cfg = load_config()
+    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+    roster = gcfg.get("roster", {})
+
+    if not roster:
+        return await update.message.reply_text("Hozircha ro'yxat yo'q.")
+
+    only_region = " ".join(context.args).strip() if context.args else None
+    if only_region:
+        match = None
+        for existing in roster.keys():
+            if existing.lower() == only_region.lower():
+                match = existing
+                break
+        if not match:
+            return await update.message.reply_text(f"'{only_region}' nomli viloyat ro'yxati topilmadi.")
+        regions_to_export = {match: roster[match]}
+    else:
+        regions_to_export = roster
+
+    lines = ["ABACUSPRIME — ISHTIROKCHILAR RO'YXATI\n"]
+    grand_total = 0
+    for region, cats in regions_to_export.items():
+        region_total = sum(len(v) for v in cats.values())
+        if region_total == 0:
+            continue
+        lines.append(f"\n\n########## {region.upper()} ({region_total} nafar) ##########")
+        for cat in ["5-6 yosh", "7-8 yosh", "9-10 yosh", "11+ yosh"]:
+            students = cats.get(cat, [])
+            if not students:
+                continue
+            lines.append(f"\n=== {cat} ({len(students)} nafar) ===")
+            for i, s in enumerate(students, 1):
+                lines.append(f"{i}. {s['name']} — {s['age']} yosh")
+        grand_total += region_total
+
+    lines.append(f"\n\n\nUMUMIY JAMI: {grand_total} nafar")
+
+    text_content = "\n".join(lines)
+    file_path = f"/tmp/royhat_{update.effective_chat.id}.txt"
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(text_content)
+
+    await update.message.reply_document(
+        document=open(file_path, "rb"),
+        filename="royhat.txt",
+        caption=f"Jami: {grand_total} nafar o'quvchi.",
+    )
+
+
+async def cmd_royhattozala(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Argumentsiz — hammasini tozalaydi. Argument bilan (/royhattozala Buxoro) —
+    faqat o'sha viloyatni tozalaydi."""
+    if not await is_admin(update, context):
+        return await update.message.reply_text("Bu buyruq faqat adminlar uchun.")
+    cfg = load_config()
+    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+
+    if context.args:
+        region_input = " ".join(context.args).strip()
+        roster = gcfg.get("roster", {})
+        region = None
+        for existing in roster.keys():
+            if existing.lower() == region_input.lower():
+                region = existing
+                break
+        if not region:
+            return await update.message.reply_text(f"'{region_input}' nomli viloyat ro'yxati topilmadi.")
+        del roster[region]
+        save_config(cfg)
+        return await update.message.reply_text(f"✅ {region} ro'yxati tozalandi.")
+
+    gcfg["roster"] = {}
+    save_config(cfg)
+    await update.message.reply_text("✅ Barcha viloyatlar ro'yxati tozalandi.")
+
+
+# ---------- INSTAGRAM QO'LDA TASDIQLASH ----------
+
+async def on_instagram_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi botga shaxsiy skrinshot yuborsa, adminga tekshirish uchun yuboradi."""
+    user = update.effective_user
+    if user.id == OWNER_ID:
+        return  # Admin o'ziga skrinshot yuborsa e'tiborsiz qoldiramiz
+
+    caption = (
+        f"📸 Instagram tasdiqlash so'rovi\n\n"
+        f"Kimdan: {user.mention_html()} (ID: {user.id})"
+    )
+    buttons = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"igok:{user.id}"),
+        InlineKeyboardButton("❌ Rad etish", callback_data=f"igno:{user.id}"),
+    ]])
+
+    await context.bot.send_photo(
+        OWNER_ID,
+        photo=update.message.photo[-1].file_id,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=buttons,
+    )
+    await update.message.reply_text("Skrinshotingiz adminга yuborildi, tez orada tekshiriladi. ⏳")
+
+
+async def on_instagram_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != OWNER_ID:
+        await query.answer("Bu tugma faqat admin uchun!", show_alert=True)
+        return
+
+    action, target_id_str = query.data.split(":", 1)
+    target_id = int(target_id_str)
+
+    if action == "igok":
+        if DEFAULT_GROUP_ID:
+            try:
+                await context.bot.restrict_chat_member(
+                    DEFAULT_GROUP_ID,
+                    target_id,
+                    permissions=ChatPermissions(
+                        can_send_messages=True,
+                        can_send_photos=True,
+                        can_send_videos=True,
+                        can_send_other_messages=True,
+                    ),
+                )
+            except Exception:
+                pass
+        try:
+            await context.bot.send_message(target_id, "✅ Instagram tasdiqlandi! Endi guruhda yozishingiz mumkin.")
+        except Exception:
+            pass
+        await query.answer("Tasdiqlandi!")
+        await query.edit_message_caption(caption=query.message.caption + "\n\n✅ TASDIQLANDI")
+    else:
+        try:
+            await context.bot.send_message(
+                target_id,
+                "❌ Instagram skrinshoti tasdiqlanmadi. Iltimos, to'g'ri skrinshot bilan qayta urinib ko'ring.",
+            )
+        except Exception:
+            pass
+        await query.answer("Rad etildi.")
+        await query.edit_message_caption(caption=query.message.caption + "\n\n❌ RAD ETILDI")
+
+
 # ---------- ASOSIY LOGIKA ----------
 
 async def get_missing_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int, channels: list) -> list:
@@ -208,10 +511,21 @@ async def get_missing_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int,
     return missing
 
 
+# ============ INSTAGRAM SAHIFALAR ============
+# Bu tugmalar faqat havola — avtomatik tekshirilmaydi, shunchaki odamlarni
+# Instagram sahifalaringizga yo'naltiradi.
+INSTAGRAM_LINKS = [
+    {"name": "Haramayn.store", "url": "https://instagram.com/haramayn.store"},
+    {"name": "AbacusPrime_", "url": "https://instagram.com/abacusprime_"},
+]
+
+
 def build_keyboard(missing: list, target_user_id: int) -> InlineKeyboardMarkup:
     buttons = []
     for ch in missing:
         buttons.append([InlineKeyboardButton(f"📢 {ch['name']}", url=ch["invite_link"])])
+    for ig in INSTAGRAM_LINKS:
+        buttons.append([InlineKeyboardButton(f"📸 {ig['name']}", url=ig["url"])])
     buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data=f"check:{target_user_id}")])
     return InlineKeyboardMarkup(buttons)
 
@@ -417,10 +731,19 @@ def main():
     app.add_handler(CommandHandler("listchannels", cmd_listchannels))
     app.add_handler(CommandHandler("setmessage", cmd_setmessage))
     app.add_handler(CommandHandler("id", cmd_id))
+    app.add_handler(CommandHandler("royhat", cmd_royhat))
+    app.add_handler(CommandHandler("royhatlar", cmd_royhatlar))
+    app.add_handler(CommandHandler("royhatdanchiqar", cmd_royhatdanchiqar))
+    app.add_handler(CommandHandler("royhattozala", cmd_royhattozala))
     app.add_handler(CallbackQueryHandler(on_check_button, pattern=r"^check:"))
+    app.add_handler(CallbackQueryHandler(on_instagram_decision, pattern=r"^ig(ok|no):"))
     app.add_handler(MessageHandler(
         filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
         on_service_message,
+    ))
+    app.add_handler(MessageHandler(
+        filters.PHOTO & filters.ChatType.PRIVATE,
+        on_instagram_screenshot,
     ))
     app.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, on_message))
 
