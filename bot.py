@@ -13,6 +13,7 @@ Ishga tushirish:
 Sozlash: BOT_TOKEN va OWNER_ID ni pastda to'ldiring.
 """
 
+import asyncio
 import json
 import os
 import logging
@@ -38,7 +39,10 @@ logger = logging.getLogger(__name__)
 # Bu ikkisini kodga yozmaymiz — hosting xizmatida "Variables" bo'limiga qo'yamiz.
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+CONFIG_FILE = os.environ.get(
+    "CONFIG_PATH",
+    os.path.join(os.path.dirname(__file__), "config.json"),
+)
 DEFAULT_MESSAGE = (
     "Hurmatli {mention}!\n\n"
     "Guruhda yozish uchun avval quyidagi kanal(lar)ga qo'shiling, "
@@ -55,6 +59,7 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
+    os.makedirs(os.path.dirname(CONFIG_FILE) or ".", exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
@@ -258,6 +263,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=keyboard,
             parse_mode="HTML",
         )
+
+        async def _auto_delete():
+            await asyncio.sleep(300)  # 5 daqiqa
+            try:
+                await context.bot.delete_message(warn.chat_id, warn.message_id)
+            except Exception:
+                pass
+
+        asyncio.create_task(_auto_delete())
 
 
 async def on_check_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
