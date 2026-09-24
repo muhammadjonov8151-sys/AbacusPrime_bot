@@ -195,6 +195,43 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Chat ID: `{update.effective_chat.id}`", parse_mode="Markdown")
 
 
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    is_owner = user.id == OWNER_ID
+
+    text = (
+        f"Assalomu alaykum, {user.first_name}! 👋\n\n"
+        f"Men — <b>AbacusPrime</b> botiman. Guruhga qo'shilish uchun kerakli "
+        f"kanallarni tekshiraman, ishtirokchilar ro'yxatini yurituvchiga yordam beraman.\n\n"
+    )
+
+    if is_owner:
+        text += (
+            "<b>📋 ADMIN BUYRUQLARI</b>\n\n"
+            "<u>Kanallar (majburiy obuna):</u>\n"
+            "/addchannel &lt;kanal_id&gt; &lt;nom&gt; — yangi kanal qo'shish\n"
+            "/removechannel &lt;kanal_id&gt; — kanalni o'chirish\n"
+            "/listchannels — qo'shilgan kanallar ro'yxati\n"
+            "/setmessage — (reply) ogohlantirish matnini o'zgartirish\n\n"
+            "<u>O'quvchilar ro'yxati:</u>\n"
+            "/royhat &lt;viloyat&gt; — (reply) ro'yxat qo'shish\n"
+            "/royhatlar [viloyat] — tayyor faylni olish\n"
+            "/royhatdanchiqar &lt;viloyat&gt; — (reply) o'quvchini o'chirish\n"
+            "/royhattozala [viloyat] — ro'yxatni tozalash\n\n"
+            "<u>Boshqa:</u>\n"
+            "/id — joriy chat ID'sini ko'rish\n"
+        )
+    else:
+        text += (
+            "Guruhda yozish uchun kerakli kanallarga obuna bo'lishingiz so'raladi — "
+            "bu haqidagi xabar avtomatik chiqadi.\n\n"
+            "Instagram sahifamizga obuna bo'lganingiz haqida skrinshotni shu yerga "
+            "(shaxsiy xabar sifatida) yuborsangiz, tekshirib tasdiqlaymiz."
+        )
+
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
 # ---------- YOSH BO'YICHA RO'YXAT TARTIBLASH ----------
 
 def age_category(age: int) -> str:
@@ -717,6 +754,18 @@ async def _seed_defaults(app):
         save_config(cfg)
         logger.info("Standart kanallar tiklandi.")
 
+    # Telegram'ning "/" menyusida ko'rinadigan buyruqlar ro'yxati
+    try:
+        from telegram import BotCommand
+        await app.bot.set_my_commands([
+            BotCommand("start", "Botni ishga tushirish / yordam"),
+            BotCommand("id", "Joriy chat ID'sini ko'rish"),
+            BotCommand("listchannels", "Majburiy kanallar ro'yxati"),
+            BotCommand("royhatlar", "Ishtirokchilar ro'yxatini olish"),
+        ])
+    except Exception as e:
+        logger.warning(f"Buyruqlar menyusi sozlanmadi: {e}")
+
 
 def main():
     if not BOT_TOKEN or not OWNER_ID:
@@ -726,6 +775,7 @@ def main():
         )
     app = Application.builder().token(BOT_TOKEN).post_init(_seed_defaults).build()
 
+    app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("addchannel", cmd_addchannel))
     app.add_handler(CommandHandler("removechannel", cmd_removechannel))
     app.add_handler(CommandHandler("listchannels", cmd_listchannels))
