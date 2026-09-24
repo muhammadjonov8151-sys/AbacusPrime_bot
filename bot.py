@@ -48,6 +48,20 @@ DEFAULT_MESSAGE = (
     "Guruhda yozish uchun avval quyidagi kanal(lar)ga qo'shiling, "
     "so'ng \"✅ Tekshirish\" tugmasini bosing!"
 )
+
+# ============ DOIMIY KANALLAR RO'YXATI ============
+# Bu ro'yxat har safar bot qayta ishga tushganda avtomatik tiklanadi —
+# Railway serverining vaqtinchalik xotirasi tozalansa ham yo'qolmaydi,
+# chunki bu GitHub'dagi kodning ichida saqlanadi.
+#
+# Guruh ID'sini guruh ichida /id buyrug'i orqali oling.
+# Kanal ID'sini kanal ichida /id buyrug'i orqali oling.
+DEFAULT_GROUP_ID = -1003939400499  # AbacusPrime guruhi
+DEFAULT_CHANNELS = [
+    {"id": -1003986384293, "name": "AbacusPrime"},
+    {"id": -1004349040226, "name": "Haramayn_store"},
+    {"id": -1003936814449, "name": "Haramayn_Vaqf"},
+]
 # =====================================
 
 
@@ -365,20 +379,45 @@ async def on_service_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pass
 
 
+async def _seed_defaults(app):
+    """Bot ishga tushganda DEFAULT_GROUP_ID/DEFAULT_CHANNELS asosida
+    konfiguratsiyani avtomatik tiklaydi (fayl tozalanган bo'lsa ham)."""
+    if not DEFAULT_GROUP_ID or not DEFAULT_CHANNELS:
+        return
+    cfg = load_config()
+    gcfg = get_group_cfg(cfg, DEFAULT_GROUP_ID)
+    existing_ids = {c["id"] for c in gcfg["channels"]}
+    changed = False
+    for ch in DEFAULT_CHANNELS:
+        if ch["id"] in existing_ids:
+            continue
+        try:
+            chat = await app.bot.get_chat(ch["id"])
+            invite_link = chat.invite_link or await app.bot.export_chat_invite_link(ch["id"])
+        except Exception as e:
+            logger.warning(f"Standart kanal yuklanmadi ({ch['id']}): {e}")
+            continue
+        gcfg["channels"].append({"id": ch["id"], "name": ch["name"], "invite_link": invite_link})
+        changed = True
+    if changed:
+        save_config(cfg)
+        logger.info("Standart kanallar tiklandi.")
+
+
 def main():
     if not BOT_TOKEN or not OWNER_ID:
         raise SystemExit(
             "BOT_TOKEN yoki OWNER_ID topilmadi! "
             "Hosting xizmatida 'Variables' bo'limiga BOT_TOKEN va OWNER_ID ni qo'shing."
         )
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(_seed_defaults).build()
 
     app.add_handler(CommandHandler("addchannel", cmd_addchannel))
     app.add_handler(CommandHandler("removechannel", cmd_removechannel))
     app.add_handler(CommandHandler("listchannels", cmd_listchannels))
     app.add_handler(CommandHandler("setmessage", cmd_setmessage))
     app.add_handler(CommandHandler("id", cmd_id))
-    app.add_handler(CallbackQueryHandler(on_check_button, pattern="^check$"))
+    app.add_handler(CallbackQueryHandler(on_check_button, pattern=r"^check:"))
     app.add_handler(MessageHandler(
         filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
         on_service_message,
