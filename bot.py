@@ -90,8 +90,13 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
     if user.id == OWNER_ID:
         return True
-    member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
-    return member.status in ("administrator", "creator")
+    if update.effective_chat.type == "private":
+        return False  # shaxsiy chatda faqat OWNER admin hisoblanadi
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, user.id)
+        return member.status in ("administrator", "creator")
+    except Exception:
+        return False
 
 
 # ---------- ADMIN BUYRUQLARI ----------
@@ -215,9 +220,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/setmessage — (reply) ogohlantirish matnini o'zgartirish\n\n"
             "<u>O'quvchilar ro'yxati:</u>\n"
             "/royhat &lt;viloyat&gt; — (reply) ro'yxat qo'shish\n"
-            "/royhatlar [viloyat] — tayyor faylni olish\n"
+            "/royhatlar [viloyat] — TO'LIQ ro'yxatni (barcha ustozlar) olish\n"
             "/royhatdanchiqar &lt;viloyat&gt; — (reply) o'quvchini o'chirish\n"
-            "/royhattozala [viloyat] — ro'yxatni tozalash\n\n"
+            "/royhattozala [viloyat] — ro'yxatni tozalash\n"
+            "/ustozlar — har bir ustoz nechta o'quvchi qo'shganini ko'rish\n\n"
             "<u>Boshqa:</u>\n"
             "/id — joriy chat ID'sini ko'rish\n"
         )
@@ -226,7 +232,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Guruhda yozish uchun kerakli kanallarga obuna bo'lishingiz so'raladi — "
             "bu haqidagi xabar avtomatik chiqadi.\n\n"
             "Instagram sahifamizga obuna bo'lganingiz haqida skrinshotni shu yerga "
-            "(shaxsiy xabar sifatida) yuborsangiz, tekshirib tasdiqlaymiz."
+            "(shaxsiy xabar sifatida) yuborsangiz, tekshirib tasdiqlaymiz.\n\n"
+            "<b>👨‍🏫 USTOZLAR UCHUN — O'QUVCHILAR RO'YXATI</b>\n\n"
+            "O'quvchilaringiz ro'yxatini (har qatorda: <i>Ism Familiya - yosh</i>) "
+            "menga shu yerda yuboring, so'ng o'sha xabarga <b>javob (reply)</b> qilib:\n"
+            "<code>/royhat Viloyat_nomi</code>\n"
+            "deb yozing (masalan: <code>/royhat Buxoro</code>).\n\n"
+            "Xohlagan vaqtingizda o'zingiz qo'shgan o'quvchilarni ko'rish uchun:\n"
+            "/royhatlarim"
         )
 
     await update.message.reply_text(text, parse_mode="HTML")
@@ -268,16 +281,22 @@ def parse_roster_line(line: str):
     return name_part, age
 
 
+def roster_target_chat_id(update: Update) -> int:
+    """Ro'yxatlar doim bitta joyda (DEFAULT_GROUP_ID) saqlanadi — qaysi chatdan
+    yuborilishidan qat'i nazar (shaxsiy yoki guruh)."""
+    return DEFAULT_GROUP_ID if DEFAULT_GROUP_ID else update.effective_chat.id
+
+
 async def cmd_royhat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reply qilingan ro'yxatni, ko'rsatilgan viloyat ostida, yosh bo'yicha
-    tartiblab saqlaydi. Foydalanish: xabarga reply qilib /royhat Buxoro"""
-    if not await is_admin(update, context):
-        return await update.message.reply_text("Bu buyruq faqat adminlar uchun.")
+    tartiblab saqlaydi. Foydalanish: xabarga reply qilib /royhat Buxoro
+    Bu buyruqni istalgan ustoz botga shaxsiy yozishmada ham ishlata oladi."""
 
     if not context.args:
         return await update.message.reply_text(
             "Viloyat nomini ko'rsating. Masalan:\n"
-            "Avval ro'yxat xabariga reply qilib: /royhat Buxoro"
+            "Avval o'quvchilar ro'yxatini yuboring (har qatorda: Ism Familiya - yosh), "
+            "so'ng o'sha xabarga javob (reply) qilib: /royhat Buxoro"
         )
 
     if not update.message.reply_to_message or not update.message.reply_to_message.text:
@@ -287,10 +306,11 @@ async def cmd_royhat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     region_input = " ".join(context.args).strip()
+    teacher = update.effective_user
 
     lines = update.message.reply_to_message.text.split("\n")
     cfg = load_config()
-    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+    gcfg = get_group_cfg(cfg, roster_target_chat_id(update))
     if "roster" not in gcfg:
         gcfg["roster"] = {}
 
@@ -313,7 +333,12 @@ async def cmd_royhat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name, age = parsed
         cat = age_category(age)
         gcfg["roster"][region].setdefault(cat, [])
-        gcfg["roster"][region][cat].append({"name": name, "age": age})
+        gcfg["roster"][region][cat].append({
+            "name": name,
+            "age": age,
+            "teacher_id": teacher.id,
+            "teacher_name": teacher.full_name,
+        })
         added += 1
 
     save_config(cfg)
@@ -332,6 +357,73 @@ async def cmd_royhat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             summary_lines.append(f"— {fl}")
 
     await update.message.reply_text("\n".join(summary_lines))
+
+
+async def cmd_royhatlarim(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Har bir ustoz faqat O'ZI qo'shgan o'quvchilarni ko'radi."""
+    teacher = update.effective_user
+    cfg = load_config()
+    gcfg = get_group_cfg(cfg, roster_target_chat_id(update))
+    roster = gcfg.get("roster", {})
+
+    lines = [f"📋 {teacher.full_name} — sizning qo'shgan o'quvchilaringiz:\n"]
+    total = 0
+    for region, cats in roster.items():
+        region_entries = []
+        for cat in ["5-6 yosh", "7-8 yosh", "9-10 yosh", "11+ yosh"]:
+            for s in cats.get(cat, []):
+                if s.get("teacher_id") == teacher.id:
+                    region_entries.append(f"  • {s['name']} — {s['age']} yosh ({cat})")
+        if region_entries:
+            lines.append(f"\n{region}:")
+            lines.extend(region_entries)
+            total += len(region_entries)
+
+    if total == 0:
+        return await update.message.reply_text(
+            "Siz hali hech qanday o'quvchi qo'shmagansiz.\n\n"
+            "Ro'yxatni yuboring (har qatorda: Ism Familiya - yosh), so'ng o'sha xabarga "
+            "reply qilib: /royhat <viloyat>"
+        )
+
+    lines.append(f"\n\nJami siz qo'shgan: {total} nafar")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_ustozlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Admin) Har bir ustozning nechta o'quvchi qo'shganini ko'rsatadi."""
+    if not await is_admin(update, context):
+        return await update.message.reply_text("Bu buyruq faqat admin uchun.")
+
+    cfg = load_config()
+    gcfg = get_group_cfg(cfg, roster_target_chat_id(update))
+    roster = gcfg.get("roster", {})
+
+    tally = {}  # teacher_id -> {"name":..., "count":0, "regions": set()}
+    for region, cats in roster.items():
+        for cat, students in cats.items():
+            for s in students:
+                tid = s.get("teacher_id")
+                tname = s.get("teacher_name", "Noma'lum")
+                if tid is None:
+                    continue
+                tally.setdefault(tid, {"name": tname, "count": 0, "regions": set()})
+                tally[tid]["count"] += 1
+                tally[tid]["regions"].add(region)
+
+    if not tally:
+        return await update.message.reply_text("Hozircha hech kim ro'yxat qo'shmagan.")
+
+    ranked = sorted(tally.values(), key=lambda x: x["count"], reverse=True)
+    lines = ["👨‍🏫 USTOZLAR BO'YICHA HISOBOT\n"]
+    for i, t in enumerate(ranked, 1):
+        regions_str = ", ".join(sorted(t["regions"]))
+        lines.append(f"{i}. {t['name']} — {t['count']} nafar ({regions_str})")
+
+    total_students = sum(t["count"] for t in ranked)
+    lines.append(f"\n\nJami: {len(ranked)} ta ustoz, {total_students} nafar o'quvchi")
+
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cmd_royhatdanchiqar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -359,7 +451,7 @@ async def cmd_royhatdanchiqar(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     target_name, target_age = parsed
     cfg = load_config()
-    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+    gcfg = get_group_cfg(cfg, roster_target_chat_id(update))
     roster = gcfg.get("roster", {})
 
     region = None
@@ -389,7 +481,7 @@ async def cmd_royhatlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ro'yxatni fayl qilib chiqaradi. Argumentsiz — barcha viloyatlar,
     argument bilan (masalan /royhatlar Buxoro) — faqat o'sha viloyat."""
     cfg = load_config()
-    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+    gcfg = get_group_cfg(cfg, roster_target_chat_id(update))
     roster = gcfg.get("roster", {})
 
     if not roster:
@@ -444,7 +536,7 @@ async def cmd_royhattozala(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context):
         return await update.message.reply_text("Bu buyruq faqat adminlar uchun.")
     cfg = load_config()
-    gcfg = get_group_cfg(cfg, update.effective_chat.id)
+    gcfg = get_group_cfg(cfg, roster_target_chat_id(update))
 
     if context.args:
         region_input = " ".join(context.args).strip()
@@ -759,6 +851,8 @@ async def _seed_defaults(app):
         from telegram import BotCommand
         await app.bot.set_my_commands([
             BotCommand("start", "Botni ishga tushirish / yordam"),
+            BotCommand("royhat", "(reply) Ro'yxat qo'shish — /royhat Viloyat"),
+            BotCommand("royhatlarim", "O'zim qo'shgan o'quvchilarni ko'rish"),
             BotCommand("id", "Joriy chat ID'sini ko'rish"),
             BotCommand("listchannels", "Majburiy kanallar ro'yxati"),
             BotCommand("royhatlar", "Ishtirokchilar ro'yxatini olish"),
@@ -782,9 +876,11 @@ def main():
     app.add_handler(CommandHandler("setmessage", cmd_setmessage))
     app.add_handler(CommandHandler("id", cmd_id))
     app.add_handler(CommandHandler("royhat", cmd_royhat))
+    app.add_handler(CommandHandler("royhatlarim", cmd_royhatlarim))
     app.add_handler(CommandHandler("royhatlar", cmd_royhatlar))
     app.add_handler(CommandHandler("royhatdanchiqar", cmd_royhatdanchiqar))
     app.add_handler(CommandHandler("royhattozala", cmd_royhattozala))
+    app.add_handler(CommandHandler("ustozlar", cmd_ustozlar))
     app.add_handler(CallbackQueryHandler(on_check_button, pattern=r"^check:"))
     app.add_handler(CallbackQueryHandler(on_instagram_decision, pattern=r"^ig(ok|no):"))
     app.add_handler(MessageHandler(
